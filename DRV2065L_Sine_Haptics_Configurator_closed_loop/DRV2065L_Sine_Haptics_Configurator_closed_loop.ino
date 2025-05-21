@@ -67,28 +67,13 @@ void setup() {
 #else
   drv.selectLibrary(6);
   drv.useLRA();
-
-  // === BEGIN custom LRA closed-loop PWM config ===
-  // Set mode to PWM input
-  drv.setMode(DRV2605_MODE_PWMANALOG);  // MODE = 0x03
-
-  // Force N_PWM_ANALOG = 0 (PWM mode), and LRA_OPEN_LOOP = 0 (closed loop)
-  uint8_t ctrl3 = drv.readRegister8(DRV2605_REG_CONTROL3);
-  ctrl3 &= ~(1 << 1);  // Clear N_PWM_ANALOG bit (bit 1)
-  ctrl3 &= ~(1 << 0);  // Clear LRA_OPEN_LOOP bit (bit 0)
-  drv.writeRegister8(DRV2605_REG_CONTROL3, ctrl3);
-
-  // Rated voltage = 1.8V, Clamp = 2.0V → 1LSB = 21.9mV
-  drv.writeRegister8(DRV2605_REG_RATEDV, 82);  // 1.8V
-  drv.writeRegister8(DRV2605_REG_CLAMPV, 91);  // 2.0V
-
   amplitudeMin = 3;
   amplitudeMax = 127;
   minTickDuration = 1;
   tickDuration = 10;
 #endif
 
-  //drv.setMode(DRV2605_MODE_REALTIME);
+  drv.setMode(DRV2605_MODE_REALTIME);
   drv.setRealtimeValue(0);
 
   Serial.println("Enter 'start' or 'stop' to turn haptics on/off");

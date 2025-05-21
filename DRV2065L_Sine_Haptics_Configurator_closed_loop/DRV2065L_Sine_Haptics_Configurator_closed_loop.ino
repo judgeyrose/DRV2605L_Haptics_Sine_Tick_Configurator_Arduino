@@ -2,29 +2,17 @@
 #include <Adafruit_DRV2605.h>
 #include <math.h>
 
-
-
-
-//USER SETTING
-//
-//
-// 
-#define MOTOR_TYPE 0  // Set to 1 for ERM, 0 for LRA            //DONT CHANGE ANYTHING IN THE PROGRAM EXCEPT FOR THIS LINE 
-//
-//
-//
-// NO CHANGING ANYTHING ELSE - ADJUSTMENTS ARE MADE DURING RUNTIME IN SERIAL MONITOR
-
-
-
+// === USER SETTING ===
+#define MOTOR_TYPE 0  // 1 = ERM, 0 = LRA
+#define PWM_PIN 9     // PWM output pin to DRV2605L IN/TRIG
 
 Adafruit_DRV2605 drv;
 
 // === Configurable Parameters ===
 int amplitude = 100;      // 0-127
 int tickDuration = 30;    // ms the motor is on
-int sineDuration = 5000;  // half breath duration (Inhale or Exhale sengment) in ms (1 full sine wave per half breath) peaks mid breath
-int numTicks = 43;        // ticks per half sine, loosely related to baffles (14 x 3)
+int sineDuration = 5000;  // half breath duration
+int numTicks = 43;        // ticks per half sine
 
 // === State Variables ===
 int tickIndex = 0;
@@ -42,24 +30,25 @@ double tickPhaseTime = 0;
 int amplitudeMin = 0;
 int amplitudeMax = 0;
 int minTickDuration = 0;
-int dynamicAmplitude = 0;  // current value applied in RTP
-
+int dynamicAmplitude = 0;
 
 // === Setup ===
 void setup() {
   Serial.begin(115200);
-  while (!Serial)
-    ;
+  while (!Serial);
 
   Wire.begin();
   if (!drv.begin()) {
     Serial.println("DRV2605 not found");
-    while (1)
-      ;
+    while (1);
   }
+
+  pinMode(PWM_PIN, OUTPUT);
+
 #if MOTOR_TYPE
   drv.selectLibrary(3);
   drv.useERM();
+  drv.setMode(DRV2605_MODE_REALTIME);
   amplitudeMin = 50;
   amplitudeMax = 100;
   minTickDuration = 15;
@@ -67,18 +56,13 @@ void setup() {
 #else
   drv.selectLibrary(6);
   drv.useLRA();
+  drv.setMode(DRV2605_MODE_PWMANALOG);
 
-  // === BEGIN custom LRA closed-loop PWM config ===
-  // Set mode to PWM input
-  drv.setMode(DRV2605_MODE_PWMANALOG);  // MODE = 0x03
-
-  // Force N_PWM_ANALOG = 0 (PWM mode), and LRA_OPEN_LOOP = 0 (closed loop)
   uint8_t ctrl3 = drv.readRegister8(DRV2605_REG_CONTROL3);
-  ctrl3 &= ~(1 << 1);  // Clear N_PWM_ANALOG bit (bit 1)
-  ctrl3 &= ~(1 << 0);  // Clear LRA_OPEN_LOOP bit (bit 0)
+  ctrl3 &= ~(1 << 1);  // Clear N_PWM_ANALOG
+  ctrl3 &= ~(1 << 0);  // Clear LRA_OPEN_LOOP
   drv.writeRegister8(DRV2605_REG_CONTROL3, ctrl3);
 
-  // Rated voltage = 1.8V, Clamp = 2.0V → 1LSB = 21.9mV
   drv.writeRegister8(DRV2605_REG_RATEDV, 82);  // 1.8V
   drv.writeRegister8(DRV2605_REG_CLAMPV, 91);  // 2.0V
 
@@ -88,42 +72,40 @@ void setup() {
   tickDuration = 10;
 #endif
 
-  //drv.setMode(DRV2605_MODE_REALTIME);
   drv.setRealtimeValue(0);
+  analogWrite(PWM_PIN, 0);  // Ensure motor is off
 
   Serial.println("Enter 'start' or 'stop' to turn haptics on/off");
-  Serial.println("Parameters can be changed with the following commands:");
-  Serial.println("Use 'a' for Amplitude (0-127)                            (Ex. a95)");
-  Serial.println("Use 'd' for Tick Duration ~0-100ms                       (Ex. d35)");
-  Serial.println("Use 's' for Inhale/Exhale Duration ~3000-9000ms          (Ex. s5000)");
-  Serial.println("Use 'n' for Ticks per Inhale/Exhale (n-1)                (Ex. n15 = 14 ticks)");
-  Serial.println("Use 'p' to print current parameters");
+  Serial.println("Use 'a' for Amplitude (e.g. a20-100)");
+  Serial.println("Use 'd' for Tick Duration");
+  Serial.println("Use 's' for Sine Duration");
+  Serial.println("Use 'n' for Ticks per Sine");
+  Serial.println("Use 'p' to print settings");
 }
 
-// === Main Loop ===
 void loop() {
   readSerialInput();
 
   unsigned long now = millis();
 
-  // Start new tick on schedule
   if (running && !buzzing && now >= nextTickStartTime) {
     unsigned long tickInterval = timeUntilNextTick();
-    float tickRate = 1000.0 / tickInterval;  // Approx Hz
+    float tickRate = 1000.0 / tickInterval;
 
     double phase = (double)tickIndex / (numTicks - 1);
-    double envelope = sin(phase * PI);  // smooth half-sine envelope
+    double envelope = sin(phase * PI);
     dynamicAmplitude = amplitudeMin + (int)((amplitudeMax - amplitudeMin) * envelope);
 
-    drv.setRealtimeValue(dynamicAmplitude);
+    // Convert 0–127 to 0–255 for analogWrite
+    int pwmValue = map(dynamicAmplitude, 0, 127, 0, 255);
+    analogWrite(PWM_PIN, pwmValue);
+
     buzzing = true;
     buzzStartTime = now;
   }
 
-
-  // Stop the tick after tickDuration
   if (buzzing && now - buzzStartTime >= tickDuration) {
-    drv.setRealtimeValue(0);
+    analogWrite(PWM_PIN, 0);
     buzzing = false;
 
     tickIndex++;
@@ -133,26 +115,21 @@ void loop() {
     Serial.print(now - cycleStartTime);
     Serial.print(" ms, Amplitude: ");
     Serial.println(dynamicAmplitude);
+
     if (tickIndex >= numTicks - 1) {
-      unsigned long cycleEnd = now;
       Serial.print("Cycle completed in ");
-      Serial.print(cycleEnd - cycleStartTime);
+      Serial.print(now - cycleStartTime);
       Serial.println(" ms");
-
-      Serial.print("Ticks this cycle: ");
-      Serial.println(tickIndex);
-
       tickIndex = 0;
       cycleStartTime = now;
     }
 
-    // Schedule next tick absolutely
     nextTickStartTime = lastTickStartTime + timeUntilNextTick();
     lastTickStartTime = nextTickStartTime;
   }
 }
 
-double timeUntilNextTickDouble() {
+unsigned long timeUntilNextTick() {
   int i = tickIndex;
   double step = 2.0 / (numTicks - 1);
   double y_now = -1.0 + step * i;
@@ -164,33 +141,10 @@ double timeUntilNextTickDouble() {
   double t_now = ((asin(y_now) + PI / 2.0) / PI) * sineDuration;
   double t_next = ((asin(y_next) + PI / 2.0) / PI) * sineDuration;
 
-  return max(1.0, t_next - t_now);  // now returns *double*, not long
+  return (unsigned long)max(1.0, t_next - t_now);
 }
 
-
-// === Time Between Ticks on Sine ===
-unsigned long timeUntilNextTick() {
-  int i = tickIndex;
-  double step = 2.0 / (numTicks - 1);  // full span from -1 to 1
-  double y_now = -1.0 + step * i;
-  double y_next = -1.0 + step * (i + 1);
-
-  y_now = constrain(y_now, -1.0, 1.0);
-  y_next = constrain(y_next, -1.0, 1.0);
-
-  double t_now = ((asin(y_now) + PI / 2.0) / PI) * sineDuration;
-  double t_next = ((asin(y_next) + PI / 2.0) / PI) * sineDuration;
-
-  double delta = max(1.0, t_next - t_now);
-  //Serial.print("Tick Interval: ");
-  //Serial.println(delta);
-  return (unsigned long)delta;
-}
-
-
-// === Serial Input Parsing ===
 String inputString = "";
-
 void readSerialInput() {
   while (Serial.available()) {
     char c = Serial.read();
@@ -211,15 +165,13 @@ void processCommand(String cmd) {
     tickIndex = 0;
     running = true;
     buzzing = false;
-
     lastTickStartTime = millis();
     nextTickStartTime = lastTickStartTime;
     nextTickDelay = timeUntilNextTick();
-
     Serial.println("Started.");
   } else if (cmd.equalsIgnoreCase("stop")) {
     running = false;
-    drv.setRealtimeValue(0);
+    analogWrite(PWM_PIN, 0);
     Serial.println("Stopped.");
   } else if (cmd.equalsIgnoreCase("p")) {
     printCurrentSettings();
